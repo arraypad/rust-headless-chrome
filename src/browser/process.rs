@@ -106,6 +106,10 @@ pub struct LaunchOptions<'a> {
     /// Passes value through to std::process::Command::envs.
     #[builder(default = "None")]
     pub process_envs: Option<HashMap<String, String>>,
+
+    /// Extra arguments to pass to the Chromium process.
+    #[builder(default = "None")]
+    pub extra_args: Option<Vec<String>>,
 }
 
 impl<'a> LaunchOptions<'a> {
@@ -252,6 +256,10 @@ impl Process {
             .collect();
 
         args.extend(extension_args.iter().map(String::as_str));
+
+        if let Some(ref extra_args) = launch_options.extra_args {
+            args.extend(extra_args.iter().map(String::as_str));
+        }
 
         let path = launch_options
             .path
