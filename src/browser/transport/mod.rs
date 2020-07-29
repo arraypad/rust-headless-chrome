@@ -18,7 +18,7 @@ use crate::protocol::target;
 use crate::protocol::CallId;
 use crate::protocol::Event;
 use crate::protocol::Message;
-use crate::{protocol, util};
+use crate::{protocol, util, util::AnyRecvError};
 
 mod waiting_call_registry;
 mod web_socket_connection;
@@ -69,7 +69,7 @@ impl Transport {
     pub fn new(
         ws_url: String,
         process_id: Option<u32>,
-        idle_browser_timeout: Duration,
+        idle_browser_timeout: Option<Duration>,
     ) -> Fallible<Self> {
         let (messages_tx, messages_rx) = mpsc::channel();
         let web_socket_connection =
@@ -224,7 +224,7 @@ impl Transport {
         conn: Arc<WebSocketConnection>,
         shutdown_rx: Receiver<()>,
         process_id: Option<u32>,
-        idle_browser_timeout: Duration,
+        idle_browser_timeout: Option<Duration>,
     ) {
         trace!("Starting handle_incoming_messages");
         std::thread::spawn(move || {
@@ -239,16 +239,23 @@ impl Transport {
                     }
                     Err(TryRecvError::Empty) => {}
                 }
-                match messages_rx.recv_timeout(idle_browser_timeout) {
+                let message = if let Some(timeout) = idle_browser_timeout {
+                    messages_rx.recv_timeout(timeout)
+                        .map_err(|e| AnyRecvError::RecvTimeoutError(e))
+                } else {
+                    messages_rx.recv()
+                        .map_err(|e| AnyRecvError::RecvError(e))
+                };
+                match message {
                     Err(recv_timeout_error) => {
                         match recv_timeout_error {
-                            RecvTimeoutError::Timeout => {
+                            AnyRecvError::RecvTimeoutError(RecvTimeoutError::Timeout) => {
                                 error!(
                                     "Transport loop got a timeout while listening for messages (Chrome #{:?})",
                                     process_id
                                 );
                             }
-                            RecvTimeoutError::Disconnected => {
+                            AnyRecvError::RecvError(_) | AnyRecvError::RecvTimeoutError(RecvTimeoutError::Disconnected) => {
                                 error!(
                                     "Transport loop got disconnected from WS's sender (Chrome #{:?})",
                                     process_id

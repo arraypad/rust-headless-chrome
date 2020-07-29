@@ -20,7 +20,7 @@ use crate::protocol::browser::methods::GetVersion;
 pub use crate::protocol::browser::methods::VersionInformationReturnObject;
 use crate::protocol::target::methods::{CreateTarget, SetDiscoverTargets};
 use crate::protocol::{self, Event};
-use crate::util;
+use crate::{util, util::AnyRecvError};
 
 #[cfg(feature = "fetch")]
 pub use fetcher::FetcherOptions;
@@ -107,16 +107,16 @@ impl Browser {
 
     /// Allows you to drive an externally-launched Chrome process instead of launch one via [`new`].
     pub fn connect(debug_ws_url: String) -> Fallible<Self> {
-        let transport = Arc::new(Transport::new(debug_ws_url, None, Duration::from_secs(30))?);
+        let transport = Arc::new(Transport::new(debug_ws_url, None, Some(Duration::from_secs(30)))?);
         trace!("created transport");
 
-        Self::create_browser(None, transport, Duration::from_secs(30))
+        Self::create_browser(None, transport, Some(Duration::from_secs(30)))
     }
 
     fn create_browser(
         process: Option<Process>,
         transport: Arc<Transport>,
-        idle_browser_timeout: Duration,
+        idle_browser_timeout: Option<Duration>,
     ) -> Fallible<Self> {
         let tabs = Arc::new(Mutex::new(vec![]));
 
@@ -268,7 +268,7 @@ impl Browser {
         events_rx: mpsc::Receiver<Event>,
         process_id: Option<u32>,
         shutdown_rx: mpsc::Receiver<()>,
-        idle_browser_timeout: Duration,
+        idle_browser_timeout: Option<Duration>,
     ) {
         let tabs = Arc::clone(&self.tabs);
         let transport = Arc::clone(&self.transport);
@@ -284,16 +284,24 @@ impl Browser {
                     Err(TryRecvError::Empty) => {}
                 }
 
-                match events_rx.recv_timeout(idle_browser_timeout) {
+                let event = if let Some(timeout) = idle_browser_timeout {
+                    events_rx.recv_timeout(timeout)
+                        .map_err(|e| AnyRecvError::RecvTimeoutError(e))
+                } else {
+                    events_rx.recv()
+                        .map_err(|e| AnyRecvError::RecvError(e))
+                };
+
+                match event {
                     Err(recv_timeout_error) => {
                         match recv_timeout_error {
-                            RecvTimeoutError::Timeout => {
+                            AnyRecvError::RecvTimeoutError(RecvTimeoutError::Timeout) => {
                                 error!(
                                     "Got a timeout while listening for browser events (Chrome #{:?})",
                                     process_id
                                 );
                             }
-                            RecvTimeoutError::Disconnected => {
+                            AnyRecvError::RecvError(_) | AnyRecvError::RecvTimeoutError(RecvTimeoutError::Disconnected) => {
                                 debug!(
                                     "Browser event sender disconnected while loop was waiting (Chrome #{:?})",
                                     process_id
@@ -377,7 +385,7 @@ impl Drop for Browser {
     fn drop(&mut self) {
         info!("Dropping browser");
         let _ = self.loop_shutdown_tx.send(());
-        self.transport.shutdown();
+		self.transport.shutdown();
     }
 }
 

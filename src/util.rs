@@ -1,5 +1,6 @@
 use std::thread::sleep;
 use std::time::{Duration, Instant};
+use std::sync::mpsc::{RecvError, RecvTimeoutError};
 
 use failure::{Error, Fail, Fallible};
 
@@ -100,4 +101,9 @@ impl Wait {
             sleep(self.sleep);
         }
     }
+}
+
+pub(crate) enum AnyRecvError {
+    RecvError(RecvError),
+    RecvTimeoutError(RecvTimeoutError),
 }
